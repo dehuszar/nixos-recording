@@ -378,110 +378,116 @@ let
     name = "wineloader.sh";
     runtimeInputs = [ pkgs.yq ];
     text = ''
-      YQ=$(command -v yq)
-      if [ -z "$YQ" ]; then
-        echo "Error: yq is not installed." >&2
-        exit 1
-      fi
-
-      SYSTEM_WINE=$(command -v wine64 || true)
-
-      call_system_wine() {
-          if [ -n "$SYSTEM_WINE" ]; then
-              exec "$SYSTEM_WINE" "$@"
-          else
-              echo "Error: system wine64 is not installed." >&2
+            YQ=$(command -v yq)
+            if [ -z "$YQ" ]; then
+              echo "Error: yq is not installed." >&2
               exit 1
-          fi
-      }
+            fi
 
-      # Executes a wine64 binary from a Bottles runner, ensuring
-      # LD_LIBRARY_PATH so it can find its own .so files.
-      exec_runner_wine64() {
-          local wine64_bin="$1"; shift
-          local runner_root
-          # Walk up from wine64's parent dir until we find the runner root
-          # (the directory that contains bin/wineserver).
-          runner_root="$(cd "$(dirname "$(dirname "$wine64_bin")")" && pwd)"
-          while [[ ! -f "$runner_root/bin/wineserver" && "$runner_root" != "/" ]]; do
-              runner_root="$(dirname "$runner_root")"
-          done
+            SYSTEM_WINE=$(command -v wine64 || true)
 
-          export LD_LIBRARY_PATH="\
-$runner_root/lib/wine/x86_64-unix:\
-$runner_root/lib64:\
-$runner_root/lib:\
-$LD_LIBRARY_PATH"
-          exec "$wine64_bin" "$@"
-      }
+            call_system_wine() {
+                if [ -n "$SYSTEM_WINE" ]; then
+                    exec "$SYSTEM_WINE" "$@"
+                else
+                    echo "Error: system wine64 is not installed." >&2
+                    exit 1
+                fi
+            }
 
-      resolve_custom_bottles_root() {
-          yq -r '.custom_bottles_path // ""' "$1" 2>/dev/null || echo ""
-      }
+            # Executes a wine64 binary from a Bottles runner, ensuring
+            # LD_LIBRARY_PATH so it can find its own .so files.
+            exec_runner_wine64() {
+                local wine64_bin="$1"; shift
+                local runner_root
+                # Walk up from wine64's parent dir until we find the runner root
+                # (the directory that contains bin/wineserver).
+                runner_root="$(cd "$(dirname "$(dirname "$wine64_bin")")" && pwd)"
+                while [[ ! -f "$runner_root/bin/wineserver" && "$runner_root" != "/" ]]; do
+                    runner_root="$(dirname "$runner_root")"
+                done
 
-      bottle_path_exists() {
-          [[ -n "$1" && -d "$1/$2" ]]
-      }
+                export LD_LIBRARY_PATH="\
+      $runner_root/lib/wine/x86_64-unix:\
+      $runner_root/lib64:\
+      $runner_root/lib:\
+      $LD_LIBRARY_PATH"
 
-      # Looks for wine64 across common runner layouts.
-      # Prints the path if found; returns 1 otherwise.
-      find_wine64() {
-          local bottles_root="$1" runner="$2" candidate
-          for candidate in \
-              "$bottles_root/runners/$runner/files/bin/wine64" \
-              "$bottles_root/runners/$runner/dist/bin/wine64" \
-              "$bottles_root/runners/$runner/bin/wine64" \
-              "$bottles_root/runners/$runner/lib/wine/x86_64-unix/wine64"
-          do
-              if [[ -x "$candidate" ]]; then
-                  echo "$candidate"
-                  return 0
-              fi
-          done
-          return 1
-      }
+                # Wine debug logging — essential for diagnosing plugin crashes.
+                # +seh catches structured exceptions (crashes), +timestamp adds
+                # timing so we can correlate with DAW timeouts.
+                export WINEDEBUG="${WINEDEBUG:-+seh,+timestamp}"
 
-      if [[ -e "''${WINEPREFIX}/bottle.yml" ]]; then
-          RUNNER=$(yq -r ".Runner" "''${WINEPREFIX}/bottle.yml")
-          BOTTLE_PATH=$(yq -r ".Path" "''${WINEPREFIX}/bottle.yml")
-          BOTTLE_PATH=$(basename "$BOTTLE_PATH")
+                exec "$wine64_bin" "$@"
+            }
 
-          if [[ -e "$HOME/.var/app/com.usebottles.bottles/data/bottles/data.yml" ]]; then
-              IS_FLATPAK=true
-              CUSTOM_BOTTLES_PATH=$(resolve_custom_bottles_root "$HOME/.var/app/com.usebottles.bottles/data/bottles/data.yml")
-          elif [[ -e "$HOME/.local/share/bottles/data.yml" ]]; then
-              IS_FLATPAK=false
-              CUSTOM_BOTTLES_PATH=$(resolve_custom_bottles_root "$HOME/.local/share/bottles/data.yml")
-          else
-              CUSTOM_BOTTLES_PATH=""
-              IS_FLATPAK=false
-          fi
+            resolve_custom_bottles_root() {
+                yq -r '.custom_bottles_path // ""' "$1" 2>/dev/null || echo ""
+            }
 
-          if [[ "$IS_FLATPAK" == true ]] && bottle_path_exists "$CUSTOM_BOTTLES_PATH" "$BOTTLE_PATH"; then
-              BOTTLES_ROOT="$HOME/.var/app/com.usebottles.bottles/data/bottles/"
-          elif [[ "$IS_FLATPAK" == false ]] && bottle_path_exists "$CUSTOM_BOTTLES_PATH" "$BOTTLE_PATH"; then
-              BOTTLES_ROOT="$HOME/.local/share/bottles"
-          elif bottle_path_exists "$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles" "$BOTTLE_PATH"; then
-              BOTTLES_ROOT="$HOME/.var/app/com.usebottles.bottles/data/bottles/"
-          elif bottle_path_exists "$HOME/.local/share/bottles/bottles" "$BOTTLE_PATH"; then
-              BOTTLES_ROOT="$HOME/.local/share/bottles"
-          else
-              echo "Error: BOTTLES_ROOT not found." >&2
-              exit 1
-          fi
+            bottle_path_exists() {
+                [[ -n "$1" && -d "$1/$2" ]]
+            }
 
-          if [[ -z "$RUNNER" || "$RUNNER" == sys-* ]]; then
-              call_system_wine "$@"
-          else
-              WINE64_BIN=$(find_wine64 "$BOTTLES_ROOT" "$RUNNER") || {
-                  echo "Error: wine64 not found for runner '$RUNNER' in $BOTTLES_ROOT/runners/" >&2
-                  exit 1
-              }
-              exec_runner_wine64 "$WINE64_BIN" "$@"
-          fi
-      else
-          call_system_wine "$@"
-      fi
+            # Looks for wine64 across common runner layouts.
+            # Prints the path if found; returns 1 otherwise.
+            find_wine64() {
+                local bottles_root="$1" runner="$2" candidate
+                for candidate in \
+                    "$bottles_root/runners/$runner/files/bin/wine64" \
+                    "$bottles_root/runners/$runner/dist/bin/wine64" \
+                    "$bottles_root/runners/$runner/bin/wine64" \
+                    "$bottles_root/runners/$runner/lib/wine/x86_64-unix/wine64"
+                do
+                    if [[ -x "$candidate" ]]; then
+                        echo "$candidate"
+                        return 0
+                    fi
+                done
+                return 1
+            }
+
+            if [[ -e "''${WINEPREFIX}/bottle.yml" ]]; then
+                RUNNER=$(yq -r ".Runner" "''${WINEPREFIX}/bottle.yml")
+                BOTTLE_PATH=$(yq -r ".Path" "''${WINEPREFIX}/bottle.yml")
+                BOTTLE_PATH=$(basename "$BOTTLE_PATH")
+
+                if [[ -e "$HOME/.var/app/com.usebottles.bottles/data/bottles/data.yml" ]]; then
+                    IS_FLATPAK=true
+                    CUSTOM_BOTTLES_PATH=$(resolve_custom_bottles_root "$HOME/.var/app/com.usebottles.bottles/data/bottles/data.yml")
+                elif [[ -e "$HOME/.local/share/bottles/data.yml" ]]; then
+                    IS_FLATPAK=false
+                    CUSTOM_BOTTLES_PATH=$(resolve_custom_bottles_root "$HOME/.local/share/bottles/data.yml")
+                else
+                    CUSTOM_BOTTLES_PATH=""
+                    IS_FLATPAK=false
+                fi
+
+                if [[ "$IS_FLATPAK" == true ]] && bottle_path_exists "$CUSTOM_BOTTLES_PATH" "$BOTTLE_PATH"; then
+                    BOTTLES_ROOT="$HOME/.var/app/com.usebottles.bottles/data/bottles/"
+                elif [[ "$IS_FLATPAK" == false ]] && bottle_path_exists "$CUSTOM_BOTTLES_PATH" "$BOTTLE_PATH"; then
+                    BOTTLES_ROOT="$HOME/.local/share/bottles"
+                elif bottle_path_exists "$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles" "$BOTTLE_PATH"; then
+                    BOTTLES_ROOT="$HOME/.var/app/com.usebottles.bottles/data/bottles/"
+                elif bottle_path_exists "$HOME/.local/share/bottles/bottles" "$BOTTLE_PATH"; then
+                    BOTTLES_ROOT="$HOME/.local/share/bottles"
+                else
+                    echo "Error: BOTTLES_ROOT not found." >&2
+                    exit 1
+                fi
+
+                if [[ -z "$RUNNER" || "$RUNNER" == sys-* ]]; then
+                    call_system_wine "$@"
+                else
+                    WINE64_BIN=$(find_wine64 "$BOTTLES_ROOT" "$RUNNER") || {
+                        echo "Error: wine64 not found for runner '$RUNNER' in $BOTTLES_ROOT/runners/" >&2
+                        exit 1
+                    }
+                    exec_runner_wine64 "$WINE64_BIN" "$@"
+                fi
+            else
+                call_system_wine "$@"
+            fi
     '';
   };
 in
@@ -568,25 +574,19 @@ in
 
     # The actual plugin libraries that the chainloaders dlopen().
     # The chainloader searches for these next to yabridge-host.exe.
-    ".local/share/yabridge/libyabridge-vst2.so".source =
-      "${pkgs.yabridge}/lib/libyabridge-vst2.so";
-    ".local/share/yabridge/libyabridge-vst3.so".source =
-      "${pkgs.yabridge}/lib/libyabridge-vst3.so";
-    ".local/share/yabridge/libyabridge-clap.so".source =
-      "${pkgs.yabridge}/lib/libyabridge-clap.so";
+    ".local/share/yabridge/libyabridge-vst2.so".source = "${pkgs.yabridge}/lib/libyabridge-vst2.so";
+    ".local/share/yabridge/libyabridge-vst3.so".source = "${pkgs.yabridge}/lib/libyabridge-vst3.so";
+    ".local/share/yabridge/libyabridge-clap.so".source = "${pkgs.yabridge}/lib/libyabridge-clap.so";
 
     # WINE-side host executables for Windows VST bridging.
-    ".local/share/yabridge/yabridge-host.exe".source =
-      "${pkgs.yabridge}/bin/yabridge-host.exe";
-    ".local/share/yabridge/yabridge-host.exe.so".source =
-      "${pkgs.yabridge}/bin/yabridge-host.exe.so";
+    ".local/share/yabridge/yabridge-host.exe".source = "${pkgs.yabridge}/bin/yabridge-host.exe";
+    ".local/share/yabridge/yabridge-host.exe.so".source = "${pkgs.yabridge}/bin/yabridge-host.exe.so";
   };
 
   # Tell yabridge to use wineloader instead of system WINE so it picks up
   # Bottles runners (Proton, Kron4ek, etc.).  Inlined from the
   # yabridge-bottles-wineloader flake — this is the only thing it provided.
-  xdg.configFile."environment.d/wineloader.conf".text =
-    "WINELOADER=$HOME/.local/bin/wineloader.sh\n";
+  xdg.configFile."environment.d/wineloader.conf".text = "WINELOADER=$HOME/.local/bin/wineloader.sh\n";
 
   # Export WINELOADER so yabridge (and other tools) can find the wineloader wrapper.
   # WINEPREFIX tells wineloader.sh which Bottles prefix to use for yabridge-host.

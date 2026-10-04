@@ -52,6 +52,23 @@ in
     glib
     zlib
     libudev0-shim
+    # X11 stack — Wine needs these to create plugin GUI windows.
+    libX11
+    libXext
+    libXrender
+    libXrandr
+    libXcursor
+    libXcomposite
+    libXi
+    libxcb
+    libxshmfence
+    libdrm
+    libGL
+    vulkan-loader
+    # Audio backends Wine may probe.
+    alsa-lib
+    libpulseaudio
+    pipewire
   ];
 
   security.rtkit.enable = true;
