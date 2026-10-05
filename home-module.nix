@@ -60,6 +60,11 @@ let
       pkgs.libxrender
       pkgs.libxext
       pkgs.libxcb
+      pkgs.glib
+      pkgs.gtk3
+      pkgs.cairo
+      pkgs.pango
+      pkgs.libpng
       pkgs.libxkbcommon
     ];
 
@@ -176,6 +181,11 @@ let
       pkgs.freetype
       pkgs.libGL
       pkgs.libxcb
+      pkgs.glib
+      pkgs.gtk3
+      pkgs.cairo
+      pkgs.pango
+      pkgs.libpng
       pkgs.udev
       pkgs.zlib
       pkgs.fontconfig
@@ -416,7 +426,7 @@ let
                 # Wine debug logging — essential for diagnosing plugin crashes.
                 # +seh catches structured exceptions (crashes), +timestamp adds
                 # timing so we can correlate with DAW timeouts.
-                export WINEDEBUG="${WINEDEBUG:-+seh,+timestamp}"
+                export WINEDEBUG="${"WINEDEBUG:-+seh,+timestamp"}"
 
                 exec "$wine64_bin" "$@"
             }
@@ -490,6 +500,149 @@ let
             fi
     '';
   };
+
+  # --- u-he plugins (proprietary, downloaded manually) ---
+  # u-he blocks automated downloads.  Place each .tar.xz in sources/ and
+  # run `make switch`.  The plugin installer extracts each tarball to
+  # ~/.u-he/<Product>/ so the .so and Data/ live side-by-side (matching
+  # the upstream install.sh behaviour).  VST3/CLAP bundles in ~/.vst3/
+  # and ~/.clap/ symlink back to the .so in ~/.u-he/.
+  #
+  # Nix manages the shared-library dependencies via the uhe-dependencies
+  # package (a GC root), and the uhe-install script patchelfs each .so
+  # with the correct rpath so it finds those libraries at runtime.
+
+  # All shared libraries that u-he plugins need at runtime.  Kept as a
+  # separate derivation so adding it to home.packages prevents Nix from
+  # garbage-collecting any of them.
+  uhe-libs = [
+    pkgs.stdenv.cc.cc.lib
+    pkgs.alsa-lib
+    pkgs.freetype
+    pkgs.libGL
+    pkgs.libX11
+    pkgs.fontconfig
+    pkgs.zlib
+    pkgs.libxcb
+    pkgs.libxcb-keysyms
+    pkgs.libXrandr
+    pkgs.libXcursor
+    pkgs.libXcomposite
+    pkgs.libXdamage
+    pkgs.libXfixes
+    pkgs.libXi
+    pkgs.libxkbcommon
+    pkgs.xcbutil
+    pkgs.glib
+    pkgs.gtk3
+    pkgs.cairo
+    pkgs.pango
+    pkgs.libpng
+  ];
+
+  uhe-lib-path = pkgs.lib.makeLibraryPath uhe-libs;
+
+  uhe-dependencies = pkgs.runCommand "uhe-dependencies" {
+    # Each library becomes a runtime dependency of this derivation
+    # (GC root when the package is in home.packages).
+    buildInputs = uhe-libs;
+  } ''
+    mkdir -p $out
+    # Emit the rpath string so the installer can pass it to patchelf.
+    echo -n "${uhe-lib-path}" > $out/rpath
+  '';
+
+  # Shell script that installs u-he plugins to ~/.u-he/, patchelfs the
+  # .so files, and creates VST3/CLAP symlinks.  Idempotent: skips
+  # extraction if the .so already exists (but always re-patchelfs and
+  # re-creates symlinks so rpath updates propagate on rebuild).
+  uhe-install = pkgs.writeShellApplication {
+    name = "uhe-install";
+    runtimeInputs = [ pkgs.patchelf pkgs.gnutar pkgs.xz ];
+    text = ''
+      set -euo pipefail
+
+      SOURCES_DIR="$HOME/nix/nixos-config/sources"
+      UHE_DIR="$HOME/.u-he"
+      VST3_DIR="$HOME/.vst3"
+      CLAP_DIR="$HOME/.clap"
+      RPATH=$(cat ${uhe-dependencies}/rpath)
+
+      install_plugin() {
+        local tarball="$1"
+        local tarball_prefix="$2"
+        local product_dir="$3"
+        local has_clap="$4"
+
+        local tarball_path="$SOURCES_DIR/$tarball"
+        local target_dir="$UHE_DIR/$product_dir"
+        local so_file="$target_dir/$product_dir.64.so"
+
+        if [ ! -f "$tarball_path" ]; then
+          echo "  SKIP $product_dir: tarball not found at $tarball_path"
+          # Still create symlinks if .so already exists from a prior install
+          if [ -f "$so_file" ]; then
+            echo "    (re-patchelfing and re-linking existing install)"
+            patchelf --set-rpath "$RPATH" "$so_file"
+            create_symlinks "$product_dir" "$has_clap"
+          fi
+          return
+        fi
+
+        # Extract only if the .so isn't already present.
+        if [ -f "$so_file" ]; then
+          echo "  $product_dir: already installed, re-patchelfing"
+          patchelf --set-rpath "$RPATH" "$so_file"
+        else
+          echo "  Installing $product_dir from $tarball..."
+          mkdir -p "$target_dir"
+          # Extract to a temp dir, then copy the product subdirectory.
+          tmpdir=$(mktemp -d)
+          tar xf "$tarball_path" -C "$tmpdir"
+          cp -r "$tmpdir/$tarball_prefix/$product_dir/"* "$target_dir/"
+          rm -rf "$tmpdir"
+          chmod +w "$so_file"
+          patchelf --set-rpath "$RPATH" "$so_file"
+        fi
+
+        create_symlinks "$product_dir" "$has_clap"
+      }
+
+      create_symlinks() {
+        local product_dir="$1"
+        local has_clap="$2"
+        local so_file="$UHE_DIR/$product_dir/$product_dir.64.so"
+
+        # Remove any old home-manager symlinks that point into the Nix store
+        # (followed by mkdir they would land in the read-only store).
+        rm -rf "$VST3_DIR/$product_dir.vst3"
+        rm -f  "$CLAP_DIR/$product_dir.clap"
+
+        # VST3 bundle — the .vst3 directory contains Contents/x86_64-linux/<name>.so
+        local vst3_bundle="$VST3_DIR/$product_dir.vst3/Contents/x86_64-linux"
+        mkdir -p "$vst3_bundle"
+        ln -sf "$so_file" "$vst3_bundle/$product_dir.so"
+
+        # CLAP single-file bundle
+        if [ "$has_clap" = "1" ]; then
+          mkdir -p "$CLAP_DIR"
+          ln -sf "$so_file" "$CLAP_DIR/$product_dir.clap"
+        fi
+      }
+
+      echo "== u-he plugin installer =="
+      mkdir -p "$UHE_DIR" "$VST3_DIR" "$CLAP_DIR"
+
+      install_plugin "Diva_148_16519_Linux.tar.xz"       "Diva-16519"     "Diva"        "1"
+      install_plugin "Repro_113_16797_Linux.tar.xz"      "Repro-1-16797"  "Repro-1"     "1"
+      install_plugin "Satin_133_15721_Linux.tar.xz"      "Satin-15721"    "Satin"       "1"
+      install_plugin "Twangstrom_102_16742_Linux.tar.xz" "Twangstrom-16742" "Twangstrom"  "1"
+      install_plugin "Uhbik_200_19684_Linux.tar.xz"      "Uhbik-19684"    "Uhbik"       "0"
+
+      echo "== Done. Plugin dirs: $UHE_DIR =="
+      ls -1 "$UHE_DIR" 2>/dev/null || true
+    '';
+  };
 in
 {
   home.packages = [
@@ -501,6 +654,8 @@ in
     stemdeck
     vcvrack-pro
     wineloader
+    uhe-dependencies # GC root — keeps all u-he shared libraries alive
+    uhe-install # installer script (run manually or via activation)
   ];
 
   xdg.desktopEntries.stemdeck = {
@@ -582,6 +737,14 @@ in
     ".local/share/yabridge/yabridge-host.exe".source = "${pkgs.yabridge}/bin/yabridge-host.exe";
     ".local/share/yabridge/yabridge-host.exe.so".source = "${pkgs.yabridge}/bin/yabridge-host.exe.so";
   };
+
+  # Install u-he plugins to ~/.u-he/<Product>/ (mutable, writable) and
+  # create VST3/CLAP symlinks pointing there.  The installer is
+  # idempotent: skips extraction if the .so already exists, but always
+  # re-patchelfs and re-creates symlinks so rpath updates propagate.
+  home.activation.installUhePlugins = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    run ${uhe-install}/bin/uhe-install
+  '';
 
   # Tell yabridge to use wineloader instead of system WINE so it picks up
   # Bottles runners (Proton, Kron4ek, etc.).  Inlined from the
