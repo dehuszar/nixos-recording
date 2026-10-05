@@ -542,23 +542,39 @@ let
 
   uhe-lib-path = pkgs.lib.makeLibraryPath uhe-libs;
 
-  uhe-dependencies = pkgs.runCommand "uhe-dependencies" {
-    # Each library becomes a runtime dependency of this derivation
-    # (GC root when the package is in home.packages).
-    buildInputs = uhe-libs;
-  } ''
-    mkdir -p $out
-    # Emit the rpath string so the installer can pass it to patchelf.
-    echo -n "${uhe-lib-path}" > $out/rpath
-  '';
+  uhe-dependencies =
+    pkgs.runCommand "uhe-dependencies"
+      {
+        # Each library becomes a runtime dependency of this derivation
+        # (GC root when the package is in home.packages).
+        buildInputs = uhe-libs;
+      }
+      ''
+        mkdir -p $out
+        # Emit the rpath string so the installer can pass it to patchelf.
+        echo -n "${uhe-lib-path}" > $out/rpath
+      '';
 
   # Shell script that installs u-he plugins to ~/.u-he/, patchelfs the
   # .so files, and creates VST3/CLAP symlinks.  Idempotent: skips
   # extraction if the .so already exists (but always re-patchelfs and
   # re-creates symlinks so rpath updates propagate on rebuild).
+  #
+  # For each plugin, you will need to create a license key text file as the
+  # serial number input form that loads inside the plugin window does not work.
+  # The pattern for the file name is com.u-he.<PluginName>.user.txt
+  # Line 1 of this file should only contain the licenced basename
+  # Line 2 of this file should only contain the serial number
+  # If this file is properly constructed, the plugin should load with the
+  # registration in place
+
   uhe-install = pkgs.writeShellApplication {
     name = "uhe-install";
-    runtimeInputs = [ pkgs.patchelf pkgs.gnutar pkgs.xz ];
+    runtimeInputs = [
+      pkgs.patchelf
+      pkgs.gnutar
+      pkgs.xz
+    ];
     text = ''
       set -euo pipefail
 
