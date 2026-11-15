@@ -52,6 +52,13 @@ in
     glib
     zlib
     libudev0-shim
+    # Direct NEEDED deps of the installer-managed sosci binary in
+    # ~/.local/bin (and its ~/.vst3 bundle) — same JUCE stack as
+    # osci-render: fontconfig/freetype/curl in addition to the X/audio
+    # libs below.
+    fontconfig
+    freetype
+    curl
     # X11 stack — Wine needs these to create plugin GUI windows.
     libX11
     libXext

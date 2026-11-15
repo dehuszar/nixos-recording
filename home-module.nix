@@ -568,6 +568,33 @@ let
   # If this file is properly constructed, the plugin should load with the
   # registration in place
 
+  # Extra shared libraries that installer-managed binaries (sosci) link
+  # against but cannot find through Bitwig's loader or nix-ld (which a
+  # self-contained DAW binary bypasses).  Patched into DT_RUNPATH by
+  # sosci-fixup below.
+  sosci-libs = [ pkgs.alsa-lib pkgs.stdenv.cc.cc.lib pkgs.curl pkgs.fontconfig pkgs.freetype pkgs.libglvnd pkgs.libx11 pkgs.libxext pkgs.libxrender ];
+
+  # patchRpath <file> — append the store-library runpath without clobbering
+  # whatever the vendor set (Bitwig's own bundle dirs, u-he, etc.).  The
+  # activation is idempotent and re-runs after every installer update.
+  patchRpath = ''
+    patchRpath() {
+      local f="$1" existing newpath
+      [ -f "$f" ] || return 0
+      chmod u+w "$f" 2>/dev/null || true
+      existing=$(patchelf --print-rpath "$f" 2>/dev/null || true)
+      case ":$existing:" in
+        *:"$SOSCI_HEAD":*) return 0 ;;  # our runpath already applied
+      esac
+      if [ -n "$existing" ]; then
+        newpath="$existing:$SOSCI_RPATH"
+      else
+        newpath="$SOSCI_RPATH"
+      fi
+      patchelf --set-rpath "$newpath" "$f"
+    }
+  '';
+
   uhe-install = pkgs.writeShellApplication {
     name = "uhe-install";
     runtimeInputs = [
@@ -659,6 +686,53 @@ let
       ls -1 "$UHE_DIR" 2>/dev/null || true
     '';
   };
+
+  # --- osci-render / sosci installer fixups (see packages/osci-installer.nix) ---
+  # The installer writes mutable artifacts outside the store:
+  #   ~/.local/bin/osci-render, ~/.local/bin/sosci        (standalone apps)
+  #   ~/.vst3/sosci.vst3/…/sosci.so                      (Bitwig plugin)
+  # These need DT_RUNPATH pointing at nixpkgs libraries — Bitwig loads
+  # plugins through its own loader and does not inherit nix-ld, and
+  # nix-ld only covers binaries using /lib/ld-linux explicitly.  This
+  # runs after every activation, so installer self-updates are re-fixed
+  # automatically.  No-op when the artifacts are absent.
+  sosci-install-fixup = pkgs.writeShellApplication {
+    name = "sosci-install-fixup";
+    runtimeInputs = [ pkgs.patchelf ];
+    text = ''
+      SOSCI_RPATH="${lib.makeLibraryPath sosci-libs}"
+      SOSCI_HEAD="$(echo "$SOSCI_RPATH" | cut -d: -f1)"
+      ${patchRpath}
+
+      for f in \
+        "$HOME"/.vst3/sosci.vst3/Contents/x86_64-linux/*.so \
+        "$HOME"/.vst3/osci-render.vst3/Contents/x86_64-linux/*.so \
+        "$HOME"/.vst3/osci-render-instrument.vst3/Contents/x86_64-linux/*.so \
+        "$HOME"/.local/bin/sosci \
+        "$HOME"/.local/bin/osci-render
+      do
+        [ -e "$f" ] && [ ! -d "$f" ] || continue
+        patchRpath "$f"
+      done
+    '';
+  };
+
+  # --- osci-installer / sosci (paid license) ---
+  # sosci's premium binaries cannot be fetched reproducibly by Nix: the
+  # release CDN requires an activation token issued after license-key entry.
+  # So Nix ships the official installer (the binary sits in
+  # nixos-config/sources/, same convention as pianoteq/vcvrack).  Run
+  # osci-installer once to activate your license and install sosci (its
+  # binary and sosci.vst3 land in the directories the installer prompts
+  # for); rerunning it later refreshes/updates the install.
+  osci-installer-src = builtins.path {
+    path = "${builtins.getEnv "HOME"}/nix/nixos-config/sources/osci-installer";
+    name = "osci-installer";
+  };
+
+  osci-installer = pkgs.callPackage ./packages/osci-installer.nix {
+    src = osci-installer-src;
+  };
 in
 {
   home.packages = [
@@ -672,6 +746,7 @@ in
     wineloader
     uhe-dependencies # GC root — keeps all u-he shared libraries alive
     uhe-install # installer script (run manually or via activation)
+    osci-installer # license-activating installer/updater for sosci
   ];
 
   xdg.desktopEntries.stemdeck = {
@@ -760,6 +835,10 @@ in
   # re-patchelfs and re-creates symlinks so rpath updates propagate.
   home.activation.installUhePlugins = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     run ${uhe-install}/bin/uhe-install
+  '';
+
+  home.activation.sosciInstallFixup = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    run ${sosci-install-fixup}/bin/sosci-install-fixup
   '';
 
   # Tell yabridge to use wineloader instead of system WINE so it picks up
