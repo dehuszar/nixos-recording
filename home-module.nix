@@ -11,15 +11,15 @@
 let
   bottles-overridden = pkgs.bottles.override { removeWarningPopup = true; };
 
-  # --- Bitwig Studio 6.1.4 (override nixpkgs version) ---
+  # --- Bitwig Studio 6.1.7 (override nixpkgs version) ---
   bitwig-studio6-overridden = pkgs.bitwig-studio6.overrideAttrs (oldAttrs: rec {
-    version = "6.1.4";
+    version = "6.1.7";
     src = pkgs.fetchurl {
       name = "bitwig-studio-${version}.deb";
       url = "https://www.bitwig.com/dl/Bitwig%20Studio/${version}/installer_linux";
-      # TODO: Update this hash after downloading 6.1.4
+      # TODO: Update this hash after downloading 6.1.7
       # Run: nix hash file <downloaded-deb-file>
-      hash = "sha256-PqsolH15g6wiv7hnYK6XcaSBFQ/axElYEGvgl5qToJk=";
+      hash = "sha256-wuqS79fO4w73tslFrNhVB5fYHlEzKpdhzAlFPg8R16s=";
     };
   });
 
